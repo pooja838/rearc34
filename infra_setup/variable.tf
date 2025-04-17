@@ -1,18 +1,5 @@
-variable "region" {
-description = "aws resgion for deployment"
-type        = string
-default     = "ap-south-1"
+variable "aws_region" {
+  description = "The AWS region to deploy resources"
+  type        = string
+  default     = "ap-south-1"  # or you can make it null to pass via the CLI
 }
-
-variable "ami_id" {
-    description = "ami id for ec2 instance"
-    type        = string
-    default     = "ami-002f6e91abff6eb96"
-}
-
-variable "instance_type" {
-    description = "instance type for ec2 instance"
-    type        = string
-    default     = "t2.micro"
-}
-
