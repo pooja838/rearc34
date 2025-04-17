@@ -1,152 +1,214 @@
 provider "aws" {
   region = var.aws_region
 }
-resource "aws_key_pair" "ec2_key" {
-  key_name   = "my-key"
-  public_key = file("/home/pooja/.ssh/id_rsa.pub")  # Path to your public key file
+data "aws_availability_zones" "available" {
+  state = "available"
 }
 
-# Get default VPC
-data "aws_vpc" "default" {
-  default = true
+resource "aws_vpc" "myapp_vpc" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name = "myapp-vpc"
+  }
 }
 
-# Get all subnet IDs from default VPC
-data "aws_subnet" "default" {
-  vpc_id = data.aws_vpc.default.id
-  availability_zone = "${var.aws_region}a"
-  default_for_az = true
-}
-# Pick the first available subnet (note: no filtering on public IPs)
-data "aws_subnet" "default_public_a" {
- vpc_id              = data.aws_vpc.default.id
-  availability_zone   = "${var.aws_region}a"  # Ensure it's in the correct AZ
-  default_for_az      = true
-}
-data "aws_subnet" "default_public_b" {
-  vpc_id              = data.aws_vpc.default.id
-  availability_zone   = "${var.aws_region}b"
-  default_for_az      = true
+resource "aws_subnet" "myapp_public_subnet_1" {
+  vpc_id                  = aws_vpc.myapp_vpc.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "${var.aws_region}a"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "myapp-public-subnet-1"
+  }
 }
 
-# Get the default security group
-data "aws_security_group" "default" {
-  vpc_id = data.aws_vpc.default.id
-  name   = "default"
+resource "aws_subnet" "myapp_public_subnet_2" {
+  vpc_id                  = aws_vpc.myapp_vpc.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = "${var.aws_region}b"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "myapp-public-subnet-2"
+  }
 }
 
-# Create a custom security group for your instance or ECS
-resource "aws_security_group" "instance_sg" {
-  name_prefix = "rearc-quest-instances-sg-"
-  vpc_id      = data.aws_vpc.default.id
+resource "aws_internet_gateway" "myapp_igw" {
+  vpc_id = aws_vpc.myapp_vpc.id
+
+  tags = {
+    Name = "myapp-igw"
+  }
+}
+
+resource "aws_route_table" "myapp_public_rt" {
+  vpc_id = aws_vpc.myapp_vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.myapp_igw.id
+  }
+
+  tags = {
+    Name = "myapp-public-rt"
+  }
+}
+
+resource "aws_route_table_association" "myapp_rt_assoc_1" {
+  subnet_id      = aws_subnet.myapp_public_subnet_1.id
+  route_table_id = aws_route_table.myapp_public_rt.id
+}
+
+resource "aws_route_table_association" "myapp_rt_assoc_2" {
+  subnet_id      = aws_subnet.myapp_public_subnet_2.id
+  route_table_id = aws_route_table.myapp_public_rt.id
+}
+resource "aws_security_group" "myapp_sg_alb" {
+  name        = "myapp-sg-alb"
+  description = "ALB Security Group"
+  vpc_id      = aws_vpc.myapp_vpc.id
 
   ingress {
-    from_port   = 3000
-    to_port     = 3000
+    description = "Allow HTTPS"
+    from_port   = 443
+    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+    egress {
+   description     = "Allow TCP 3000 to app SG"
+     from_port       = 3000
+    to_port         = 3000
+   protocol        = "tcp"
+   security_groups = ["sg-063fdeb13ef55df62"]
+   }
+  tags = {
+    Name = "myapp-sg-alb"
+  }
+}
+resource "aws_security_group" "myapp_sg_ec2" {
+  name        = "myapp-sg-ec2"
+  description = "Allow traffic for the app EC2"
+  vpc_id      = aws_vpc.myapp_vpc.id
 
   ingress {
+    description = "SSH from anywhere"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  tags = {
-    Name = "rearc-quest-instances-sg"
-  }
-}
-resource "aws_instance" "app_instance" {
- count         = 3
- ami           = "ami-0e35ddab05955cf57"
-  instance_type        = "t2.micro"
- subnet_id     = data.aws_subnet.default_public_a.id
- vpc_security_group_ids = [aws_security_group.instance_sg.id]
- associate_public_ip_address = true 
- key_name                    = aws_key_pair.ec2_key.key_name
-
-user_data = <<-EOF
-              #!/bin/bash
-              apt-get update -y
-              apt-get install -y docker.io
-              systemctl start docker
-              systemctl enable docker
-              usermod -aG docker ubuntu
-              EOF
-
-tags = {
-    Name = "node${count.index + 1}"              # ✅ Gives instances unique names: node1, node2, node3
-  }
-}
-resource "aws_security_group" "lb_sg" {
-  name        = "load-balancer-sg"
-  description = "Allow inbound HTTP traffic"
-  vpc_id      = data.aws_vpc.default.id
-
   ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # Adjust as needed for security
+     description     = "Allow TCP 3000 from another SG"
+    from_port       = 3000
+    to_port         = 3000
+    protocol        = "tcp"
+    security_groups = ["sg-0f82bb9cb61322bd9"]
   }
 
   egress {
+    description = "Allow all outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  tags = {
+    Name = "myapp-sg-ec2"
+  }
 }
-resource "aws_lb_target_group" "app_tg" {
-  name     = "app-tg"
+resource "aws_lb" "myapp_alb" {
+  name               = "myapp-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.myapp_sg_alb.id]
+  subnets            = [
+    aws_subnet.myapp_public_subnet_1.id,
+    aws_subnet.myapp_public_subnet_2.id
+  ]
+
+  tags = {
+    Name = "myapp-alb"
+  }
+}
+resource "aws_lb_target_group" "myapp_tg" {
+  name     = "myapp-tg"
   port     = 3000
   protocol = "HTTP"
-  vpc_id   = data.aws_vpc.default.id
+  target_type = "instance"
+  vpc_id   = aws_vpc.myapp_vpc.id
 
   health_check {
     path                = "/"
     protocol            = "HTTP"
-    matcher             = "200"
+    matcher             = "200-399"
     interval            = 30
     timeout             = 5
     healthy_threshold   = 2
     unhealthy_threshold = 2
   }
 }
-resource "aws_lb_target_group_attachment" "app_attachment" {
-  count            = length(aws_instance.app_instance)
-  target_group_arn = aws_lb_target_group.app_tg.arn
-  target_id        = aws_instance.app_instance[count.index].id
-  port             = 3000
-}
-# --- Load Balancer Target Group ---
-
-resource "aws_lb" "app_lb" {
-  name_prefix        = "myapp-"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.lb_sg.id]
-  subnets            = [
-    data.aws_subnet.default_public_a.id,
-    data.aws_subnet.default_public_b.id
-  ]
-  enable_deletion_protection = false
-}
-resource "aws_lb_listener" "http_listener" {
-  load_balancer_arn = aws_lb.app_lb.arn
-  port              = 80
-  protocol          = "HTTP"
+resource "aws_lb_listener" "myapp_https_listener" {
+  load_balancer_arn = aws_lb.myapp_alb.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = var.ssl_policy
+  certificate_arn   = var.certificate_arn
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.app_tg.arn
+    target_group_arn = aws_lb_target_group.myapp_tg.arn
+  }
+}
+resource "aws_launch_template" "myapp_launch_template" {
+  name_prefix   = "myapp-launch-template"
+  image_id      = var.ami_id
+  instance_type = var.instance_type
+  key_name      = var.key_name
+
+  vpc_security_group_ids = [aws_security_group.myapp_sg_ec2.id]
+
+  user_data = base64encode(<<-EOF
+    #!/bin/bash
+    apt-get update
+    apt-get install -y docker.io
+    systemctl start docker
+    systemctl enable docker
+    docker pull poojasuryavanshi/my-docker-image8
+    docker run -d -p 3000:3000 -e SECRET_WORD=MyData --network host poojasuryavanshi/my-node-app:latest
+  EOF
+  )
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "myapp-instance"
+    }
+  }
+}
+
+resource "aws_autoscaling_group" "myapp_asg" {
+  desired_capacity    = var.desired_capacity
+  max_size            = var.max_size
+  min_size            = var.min_size
+  vpc_zone_identifier = [aws_subnet.myapp_public_subnet_1.id, aws_subnet.myapp_public_subnet_2.id]
+
+  launch_template {
+    id      = aws_launch_template.myapp_launch_template.id
+    version = "$Latest"
+  }
+
+  target_group_arns = [aws_lb_target_group.myapp_tg.arn]
+
+  tag {
+    key                 = "Name"
+    value               = "myapp-asg"
+    propagate_at_launch = true
   }
 }
