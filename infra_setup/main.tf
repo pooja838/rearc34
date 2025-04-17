@@ -181,7 +181,7 @@ resource "aws_launch_template" "myapp_launch_template" {
     systemctl start docker
     systemctl enable docker
     docker pull poojasuryavanshi/my-docker-image8
-    docker run -d -p 3000:3000 -e SECRET_WORD=MyData --network host poojasuryavanshi/my-node-app:latest
+    docker run -d -p 3000:3000 -e SECRET_WORD=MYDATA --network host poojasuryavanshi/my-docker-image8:latest
   EOF
   )
 
